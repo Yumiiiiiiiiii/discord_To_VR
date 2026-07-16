@@ -1,0 +1,23 @@
+[package]
+name = "discord_To_VR"
+version = "0.1.0"
+edition = "2021"
+description = "Discord notifications in VR (XSOverlay)"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4", "serde"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,16 @@
+# Rust build artifacts and cache
+/target/
+**/*.pdb
+
+# Compiled binaries
+*.exe
+
+# Configuration containing sensitive keys & OAuth tokens
+config.json
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

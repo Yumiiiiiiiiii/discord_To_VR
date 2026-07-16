@@ -1,0 +1,67 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - release
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package ZIP archive
+        shell: powershell
+        run: |
+          # ビルドしたバイナリ、README、およびソースコード一式を圧縮
+          $files = @(
+            "target\release\discord_To_VR.exe",
+            "README.md",
+            "Cargo.toml",
+            "Cargo.lock",
+            "src"
+          )
+          Compress-Archive -Path $files -DestinationPath discord_To_VR.zip -Force
+
+      - name: Generate Tag and Release Name
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "RELEASE_NAME=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "TAG_NAME=release-${{ github.run_number }}" >> $GITHUB_OUTPUT
+            echo "RELEASE_NAME=Release build #${{ github.run_number }} (${{ github.sha }})" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+          name: ${{ steps.tag.outputs.RELEASE_NAME }}
+          files: discord_To_VR.zip
+          generate_release_notes: true
