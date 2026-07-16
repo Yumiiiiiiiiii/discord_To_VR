@@ -36,15 +36,8 @@ jobs:
       - name: Package ZIP archive
         shell: powershell
         run: |
-          # ビルドしたバイナリ、README、およびソースコード一式を圧縮
-          $files = @(
-            "target\release\discord_To_VR.exe",
-            "README.md",
-            "Cargo.toml",
-            "Cargo.lock",
-            "src"
-          )
-          Compress-Archive -Path $files -DestinationPath discord_To_VR.zip -Force
+          # ビルドした実行ファイル (discord_To_VR.exe) のみをZIPに圧縮
+          Compress-Archive -Path "target\release\discord_To_VR.exe" -DestinationPath discord_To_VR.zip -Force
 
       - name: Generate Tag and Release Name
         id: tag
