@@ -1,5 +1,11 @@
 # Rust build artifacts and cache
 /target/
+/src-tauri/target/
+/src-tauri/gen/schemas/
+/node_modules/
+/dist/
+/latest.json
+/.playwright-mcp/
 **/*.pdb
 
 # Compiled binaries
@@ -7,6 +13,10 @@
 
 # Configuration containing sensitive keys & OAuth tokens
 config.json
+.config-*.tmp
+*.key
+*.key.pub
+*.pem
 
 # IDE and OS files
 .vscode/

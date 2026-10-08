@@ -1,0 +1,77 @@
+.tutorial-steps { list-style: none; padding: 0; margin: 0 0 22px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.tutorial-steps li { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; padding: 10px 0; }
+.tutorial-step-number { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); font-size: 12px; }
+.tutorial-steps .current { color: var(--accent); font-weight: 600; }
+.tutorial-steps .current .tutorial-step-number { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.tutorial-steps .done .tutorial-step-number { color: var(--green); background: var(--green-soft); border-color: var(--green-border); }
+.tutorial-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 28px; box-shadow: var(--card-shadow); }
+.tutorial-step-label { color: var(--accent); letter-spacing: .12em; font-size: 11px; font-weight: 600; margin-bottom: 10px; }
+.tutorial-card h2 { font-size: 23px; line-height: 1.5; margin: 0 0 12px; }
+.tutorial-card h2:focus { outline: none; }
+.tutorial-lead { color: var(--muted); font-size: 13px; line-height: 1.8; margin: 0 0 22px; }
+.tutorial-flow { display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr; align-items: center; padding: 20px 0 30px; gap: 12px; }
+.tutorial-flow > div { display: flex; flex-direction: column; align-items: center; gap: 9px; text-align: center; }
+.tutorial-flow > div > span { width: 60px; height: 60px; display: grid; place-items: center; border-radius: 18px; margin-bottom: 3px; }
+.tutorial-app-icon { color: var(--accent); background: var(--accent-soft); }
+.tutorial-flow strong { font-size: 14px; }
+.tutorial-flow small, .tutorial-flow-arrow { color: var(--muted); }
+.tutorial-callout { display: flex; align-items: flex-start; gap: 12px; background: var(--stage); border: 1px solid var(--border); border-radius: 9px; padding: 16px; margin: 22px 0 0; font-size: 12px; line-height: 1.8; }
+.tutorial-callout > svg { flex: none; color: var(--accent); margin-top: 2px; }
+.tutorial-callout p { color: var(--muted); margin: 4px 0 0; }
+.tutorial-callout > p { margin: 0; }
+.tutorial-muted { color: var(--muted); line-height: 1.8; font-size: 12px; margin: 18px 0 0; }
+.tutorial-preparations article { display: flex; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--border); }
+.tutorial-preparations article > svg { color: var(--accent); flex: none; margin-top: 3px; }
+.tutorial-preparations h3 { margin: 0 0 6px; font-size: 14px; }
+.tutorial-preparations p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.tutorial-instructions { padding-left: 22px; margin: 22px 0; font-size: 13px; }
+.tutorial-instructions li { padding-left: 4px; margin-bottom: 17px; }
+.tutorial-instructions p { font-size: 12px; line-height: 1.8; color: var(--muted); margin: 4px 0 0; }
+.tutorial-instructions code { color: var(--text); overflow-wrap: anywhere; }
+.tutorial-fields { border: none; padding: 0; margin: 0; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.tutorial-fields > div { min-width: 0; }
+.tutorial-fields label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.tutorial-fields input { width: 100%; padding: 10px 12px; font: inherit; font-size: 13px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text); background: var(--input); }
+.tutorial-fields input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tutorial-fields input[aria-invalid=true] { border-color: var(--error); }
+.tutorial-fields small { display: block; color: var(--muted); margin-top: 7px; font-size: 11px; line-height: 1.7; }
+.tutorial-redirect { grid-column: 1 / -1; }
+.tutorial-display-options { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.tutorial-display-option { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; text-align: left; padding: 20px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); }
+.tutorial-display-option.selected { background: var(--accent-soft); border: 2px solid var(--accent); padding: 19px; }
+.tutorial-display-option > svg { color: var(--accent); }
+.tutorial-display-option p { font-size: 12px; color: var(--muted); margin: 0; }
+.tutorial-display-option span { display: flex; gap: 6px; align-items: center; color: var(--accent); font-size: 11px; min-height: 17px; }
+.tutorial-sample { border: 1px dashed var(--border-strong); background: var(--stage); padding: 20px; margin-top: 20px; border-radius: 10px; }
+.tutorial-sample > span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 14px; }
+.tutorial-sample > strong { font-size: 13px; }
+.tutorial-sample > p { font-size: 13px; margin: 6px 0 0; }
+.tutorial-connection-list { margin-bottom: 20px; }
+.tutorial-connection-list article { display: flex; gap: 14px; align-items: flex-start; padding: 18px 0; border-bottom: 1px solid var(--border); }
+.tutorial-connection-list article > svg { color: var(--accent); flex: none; }
+.tutorial-connection-list article > div { flex: 1; min-width: 0; }
+.tutorial-connection-list p { color: var(--muted); line-height: 1.8; font-size: 12px; margin: 6px 0 0; }
+.tutorial-connection-list .status-label { flex: none; }
+.tutorial-text-button { display: inline-flex; gap: 8px; align-items: center; background: transparent; border: none; color: var(--muted); padding: 8px 0; font-size: 12px; }
+.tutorial-text-button:hover { color: var(--accent); }
+.tutorial-callout .tutorial-text-button { color: var(--accent); margin-top: 7px; }
+.tutorial-footer { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.tutorial-footer > .primary { margin-left: auto; }
+.tutorial-error { display: flex; align-items: flex-start; gap: 8px; padding: 14px; margin-top: 18px; background: var(--error-soft); border: 1px solid var(--error-border); color: var(--error); border-radius: 8px; font-size: 12px; }
+.tutorial-error svg { flex: none; }
+.tutorial-notice { color: var(--green); font-size: 12px; line-height: 1.8; }
+@media (max-width: 920px) {
+  .tutorial-card { padding: 22px; }
+  .tutorial-card h2 { font-size: 21px; }
+  .tutorial-steps li { flex-direction: column; align-items: center; font-size: 11px; gap: 6px; }
+  .tutorial-flow { gap: 6px; }
+  .tutorial-flow strong { font-size: 12px; }
+  .tutorial-flow small { font-size: 10px; }
+  .tutorial-fields { grid-template-columns: 1fr; }
+  .tutorial-display-option { padding: 16px; }
+  .tutorial-display-option.selected { padding: 15px; }
+}
+@media (forced-colors: active) {
+  .tutorial-display-option.selected { border-color: Highlight; }
+  .tutorial-steps .current .tutorial-step-number { border: 2px solid Highlight; }
+}
