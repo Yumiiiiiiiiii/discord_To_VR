@@ -18,9 +18,11 @@ export function manifest(version,tag,filename,signature,date=new Date()) {
   if(tag!==`v${version}`||filename!==`Discord to VR_${version}_x64-setup.exe`)throw new Error("Installer, version and tag must describe the same release.");
   const decoded=Buffer.from(signature.trim(),"base64").toString("utf8");
   if(!decoded.includes(`version:${version}`))throw new Error("The updater signature must be bound to this release version.");
+  // GitHub normalizes spaces to dots in uploaded release asset names.
+  const publishedFilename=filename.replaceAll(' ','.');
   return {
     version, notes:`Discord to VR ${version}。変更内容は GitHub Releases をご覧ください。`,pub_date:date.toISOString(),
-    platforms:{"windows-x86_64":{url:`https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(filename)}`,signature:signature.trim()}},
+    platforms:{"windows-x86_64":{url:`https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(publishedFilename)}`,signature:signature.trim()}},
   };
 }
 async function main() {
