@@ -40,10 +40,21 @@ fn write_lock() -> io::Result<MutexGuard<'static, ()>> {
 const DEFAULT_CLIENT_ID: &str = "YOUR_CLIENT_ID_HERE";
 const DEFAULT_CLIENT_SECRET: &str = "YOUR_CLIENT_SECRET_HERE";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Debug is deliberately omitted: this struct contains decrypted credentials.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    #[serde(rename = "THEME")]
+    pub theme: ThemePreference,
     #[serde(rename = "CLIENT_ID")]
     pub client_id: String,
     #[serde(rename = "CLIENT_SECRET")]
@@ -90,6 +101,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            theme: ThemePreference::System,
             client_id: DEFAULT_CLIENT_ID.to_string(),
             client_secret: DEFAULT_CLIENT_SECRET.to_string(),
             redirect_uri: "http://localhost/".to_string(),
@@ -326,6 +338,7 @@ pub fn save_setup_at(path: &Path, config: &Config) -> io::Result<()> {
     raw["CLIENT_SECRET"] = Value::String(config.client_secret.clone());
     raw["REDIRECT_URI"] = Value::String(config.redirect_uri.clone());
     raw["PRIVACY_MODE"] = Value::Bool(config.privacy_mode);
+    raw["THEME"] = serde_json::to_value(config.theme)?;
     raw["NOTIFICATION_TIMEOUT"] = Value::from(config.notification_timeout);
     raw["NOTIFICATION_VOLUME"] = Value::from(config.notification_volume);
     raw["NOTIFICATION_SOUND"] = Value::String(config.notification_sound.clone());
@@ -606,6 +619,27 @@ mod tests {
         assert!(!config.privacy_mode);
         assert!(!config.log_message_content);
         assert_eq!(config.notification_volume, 0.0);
+        assert_eq!(config.theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn theme_survives_save_and_other_settings_updates() {
+        let path =
+            std::env::temp_dir().join(format!("discord-vr-theme-{}.json", uuid::Uuid::new_v4()));
+        let mut config = valid_config();
+        for theme in [
+            ThemePreference::Dark,
+            ThemePreference::Light,
+            ThemePreference::System,
+        ] {
+            config.theme = theme;
+            save_setup_at(&path, &config).unwrap();
+            save_tokens_at(&path, "dummy-access", "dummy-refresh").unwrap();
+            save_privacy_at(&path, true).unwrap();
+            assert_eq!(load_from_path(&path, false).unwrap().theme, theme);
+        }
+        fs::remove_file(path).unwrap();
+        assert!(serde_json::from_value::<Config>(serde_json::json!({"THEME":"unknown"})).is_err());
     }
 
     #[test]

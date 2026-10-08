@@ -24,7 +24,15 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Validate release version
-        run: node scripts/release-manifest.mjs --validate
+        id: release-version
+        run: |
+          node scripts/release-manifest.mjs --validate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $appVersion = (Get-Content -Raw -Encoding UTF8 'src-tauri/tauri.conf.json' | ConvertFrom-Json).version
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$appVersion" -Encoding utf8
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and !(Test-Path -LiteralPath "docs/release-notes/$($env:GITHUB_REF_NAME).md" -PathType Leaf)) {
+            throw 'Write the changes since the previous release in docs/release-notes before publishing.'
+          }
       - uses: actions/cache@v4
         with:
           path: |
@@ -76,8 +84,8 @@ jobs:
           name: discord-to-vr-windows
           path: |
             discord_To_VR-tauri.zip
-            target/tauri/release/bundle/nsis/*-setup.exe
-            target/tauri/release/bundle/nsis/*-setup.exe.sig
+            target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe
+            target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe.sig
             latest.json
       - name: Publish stable GitHub release
         if: github.ref_type == 'tag'
@@ -85,9 +93,10 @@ jobs:
         with:
           files: |
             discord_To_VR-tauri.zip
-            target/tauri/release/bundle/nsis/*-setup.exe
-            target/tauri/release/bundle/nsis/*-setup.exe.sig
+            target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe
+            target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe.sig
             latest.json
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: docs/release-notes/${{ github.ref_name }}.md
+          generate_release_notes: false
           make_latest: true

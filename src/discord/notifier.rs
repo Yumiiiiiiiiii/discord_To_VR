@@ -1,3 +1,4 @@
+use super::context::{MetadataCache, NotificationContext};
 use super::ipc::{DiscordIPC, IpcError};
 use super::receive::ReceiveControl;
 use crate::config::Config;
@@ -21,6 +22,7 @@ const EVT_READY: &str = "READY";
 const MAX_SEEN_IDS: usize = 1000;
 const MAX_PENDING_DISPATCHES: usize = 128;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
+const METADATA_TIMEOUT: Duration = Duration::from_millis(350);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuthFailure {
@@ -91,7 +93,7 @@ fn notification_content(message: &Value, data: &Value) -> String {
     String::new()
 }
 
-fn safe_text(text: &str, max_chars: usize) -> String {
+pub(super) fn safe_text(text: &str, max_chars: usize) -> String {
     // Prevent terminal control sequences and XSOverlay rich-text instructions.
     let mut chars = text
         .chars()
@@ -122,6 +124,8 @@ pub struct DiscordRPCNotifier {
     seen_message_ids_order: VecDeque<String>,
     current_user_id: Option<String>,
     authorization_attempted: bool,
+    channel_cache: MetadataCache<NotificationContext>,
+    guild_cache: MetadataCache<String>,
     status: Arc<AtomicU8>,
     receive_control: ReceiveControl,
     whitelist_status: Arc<AtomicU8>,
@@ -157,6 +161,8 @@ impl DiscordRPCNotifier {
             seen_message_ids_order: VecDeque::new(),
             current_user_id: None,
             authorization_attempted: false,
+            channel_cache: MetadataCache::new(),
+            guild_cache: MetadataCache::new(),
             status: Arc::new(AtomicU8::new(0)),
         }
     }
@@ -435,6 +441,72 @@ impl DiscordRPCNotifier {
         }
         scopes
     }
+    async fn notification_context(
+        &mut self,
+        data: &Value,
+        message: &Value,
+        channel: Option<&str>,
+    ) -> Option<String> {
+        let mut context = NotificationContext::from_event(data, message);
+        if context.is_dm {
+            return None;
+        }
+        if context.channel_name.is_none()
+            || (context.guild_id.is_none() && context.guild_name.is_none())
+        {
+            if let Some(channel_id) = channel.filter(|id| {
+                id.len() <= 20 && !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit())
+            }) {
+                let metadata = if let Some(cached) = self.channel_cache.get(channel_id) {
+                    cached
+                } else if self.ipc.is_connected() && self.channel_cache.can_request() {
+                    let request = serde_json::json!({"cmd":"GET_CHANNEL","args":{"channel_id":channel_id},"nonce":uuid::Uuid::new_v4().to_string()});
+                    let metadata = self
+                        .rpc_request(&request, METADATA_TIMEOUT)
+                        .await
+                        .ok()
+                        .and_then(|response| {
+                            response
+                                .get("data")
+                                .filter(|data| data["id"] == channel_id)
+                                .map(NotificationContext::from_channel)
+                        });
+                    self.channel_cache
+                        .insert(channel_id.to_owned(), metadata.clone());
+                    metadata
+                } else {
+                    None
+                };
+                if let Some(metadata) = metadata {
+                    context.merge_channel(metadata);
+                }
+            }
+        }
+        if !context.is_dm && context.guild_name.is_none() {
+            if let Some(guild_id) = context.guild_id.as_deref() {
+                context.guild_name = if let Some(cached) = self.guild_cache.get(guild_id) {
+                    cached
+                } else if self.ipc.is_connected() && self.guild_cache.can_request() {
+                    let request = serde_json::json!({"cmd":"GET_GUILD","args":{"guild_id":guild_id,"timeout":350},"nonce":uuid::Uuid::new_v4().to_string()});
+                    let name = self
+                        .rpc_request(&request, METADATA_TIMEOUT)
+                        .await
+                        .ok()
+                        .and_then(|response| {
+                            response
+                                .get("data")
+                                .filter(|data| data["id"] == guild_id)
+                                .and_then(NotificationContext::guild_name)
+                        });
+                    self.guild_cache.insert(guild_id.to_owned(), name.clone());
+                    name
+                } else {
+                    None
+                };
+            }
+        }
+        context.line()
+    }
     async fn handle_notification(&mut self, data: Value, evt_type: &str) {
         self.record(if evt_type == EVT_MESSAGE_CREATE {
             Outcome::ReceivedMessage
@@ -548,6 +620,9 @@ impl DiscordRPCNotifier {
         }
         title = safe_text(&title, self.config.max_title_length);
         content = safe_text(&content, self.config.max_content_length);
+        if let Some(context) = self.notification_context(&data, message, channel).await {
+            content = format!("{context}\n{content}");
+        }
 
         if self.config.log_message_content && !self.xs_sender.privacy_mode() {
             println!("📩 [受信] {}: {}", title, content);
@@ -595,6 +670,8 @@ impl DiscordRPCNotifier {
             );
             self.receive_control.set_rpc_user(None);
             self.pending_dispatches.clear();
+            self.channel_cache.clear();
+            self.guild_cache.clear();
             self.current_user_id = None;
             if !self.ipc.connect().await {
                 self.status.store(0, Ordering::SeqCst);
@@ -916,6 +993,160 @@ mod tests {
     fn text_cannot_inject_rendering_tags_or_terminal_controls() {
         assert_eq!(safe_text("<size=999>\u{1b}hello", 100), "＜size=999＞hello");
         assert_eq!(safe_text("日本語🙂テスト", 4), "日本語🙂...");
+    }
+
+    #[tokio::test]
+    async fn server_names_are_resolved_cached_and_preserve_interleaved_notifications() {
+        let name = format!(r"\\.\pipe\discord-vr-context-test-{}", uuid::Uuid::new_v4());
+        let mut server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)
+            .unwrap();
+        let client = ClientOptions::new().open(&name).unwrap();
+        server.connect().await.unwrap();
+        let peer = tokio::spawn(async move {
+            for (command, data) in [
+                (
+                    "GET_CHANNEL",
+                    serde_json::json!({"id":"100","guild_id":"200","name":"general","type":0,"messages":[{"content":"history-must-not-be-forwarded"}]}),
+                ),
+                (
+                    "GET_GUILD",
+                    serde_json::json!({"id":"200","name":"Test Server","members":[]}),
+                ),
+            ] {
+                let mut header = [0u8; 8];
+                tokio::time::timeout(Duration::from_secs(2), server.read_exact(&mut header))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut bytes =
+                    vec![0; u32::from_le_bytes(header[4..].try_into().unwrap()) as usize];
+                server.read_exact(&mut bytes).await.unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(request["cmd"], command);
+                assert_eq!(
+                    request["args"][if command == "GET_CHANNEL" {
+                        "channel_id"
+                    } else {
+                        "guild_id"
+                    }],
+                    if command == "GET_CHANNEL" {
+                        "100"
+                    } else {
+                        "200"
+                    }
+                );
+                let mut frames = Vec::new();
+                if command == "GET_CHANNEL" {
+                    frames.push(serde_json::json!({"cmd":"DISPATCH","evt":"NOTIFICATION_CREATE","data":{"channel_id":"100","message":{"id":"interleaved","author":{"username":"Bob"},"content":"queued"}}}));
+                }
+                frames
+                    .push(serde_json::json!({"cmd":command,"nonce":request["nonce"],"data":data}));
+                for frame in frames {
+                    let bytes = serde_json::to_vec(&frame).unwrap();
+                    server.write_all(&1i32.to_le_bytes()).await.unwrap();
+                    server
+                        .write_all(&(bytes.len() as u32).to_le_bytes())
+                        .await
+                        .unwrap();
+                    server.write_all(&bytes).await.unwrap();
+                }
+            }
+            // Any uncached/duplicate request would break the checks below.
+            sleep(Duration::from_millis(100)).await;
+        });
+        let privacy = Arc::new(AtomicBool::new(false));
+        let (sender, mut rx, connected) =
+            crate::vr::create_xsoverlay_channel(Client::new(), privacy.clone());
+        connected.store(true, Ordering::SeqCst);
+        let mut notifier = DiscordRPCNotifier::new(
+            Config {
+                whitelist_channel_ids: vec!["100".into()],
+                ..Config::default()
+            },
+            sender,
+            Client::new(),
+        );
+        notifier.ipc = DiscordIPC::from_stream(client);
+        notifier.handle_notification(serde_json::json!({"channel_id":"100","message":{"id":"first","author":{"username":"Alice"},"content":"hello"}}), EVT_NOTIFICATION_CREATE).await;
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first.title, "Alice");
+        assert_eq!(first.content, "Test Server / #general\nhello");
+        assert_eq!(notifier.pending_dispatches.len(), 1);
+        let pending = notifier.pending_dispatches.pop_front().unwrap();
+        notifier.handle_dispatch(&pending).await;
+        assert_eq!(
+            rx.recv().await.unwrap().content,
+            "Test Server / #general\nqueued"
+        );
+        notifier
+            .receive_control
+            .set_mode(super::super::receive::ReceiveMode::Whitelist);
+        notifier.handle_notification(serde_json::json!({"channel_id":"100","message":{"id":"raw","author":{"username":"Alice"},"content":"whitelist"}}), EVT_MESSAGE_CREATE).await;
+        assert_eq!(
+            rx.recv().await.unwrap().content,
+            "Test Server / #general\nwhitelist"
+        );
+        notifier
+            .receive_control
+            .set_mode(super::super::receive::ReceiveMode::Normal);
+        notifier.handle_notification(serde_json::json!({"channel_id":"300","channel":{"type":3,"name":"Friends"},"message":{"id":"dm","author":{"username":"Alice"},"content":"group dm"}}), EVT_NOTIFICATION_CREATE).await;
+        assert_eq!(rx.recv().await.unwrap().content, "group dm");
+        privacy.store(true, Ordering::SeqCst);
+        notifier.handle_notification(serde_json::json!({"channel_id":"400","guild_id":"500","message":{"id":"private","content":"private message"}}), EVT_NOTIFICATION_CREATE).await;
+        assert_eq!(
+            rx.recv().await.unwrap().content,
+            "新しいメッセージがあります"
+        );
+        assert!(notifier.channel_cache.get("300").is_none());
+        assert!(notifier.channel_cache.get("400").is_none());
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unavailable_metadata_does_not_drop_notifications_or_retry_every_message() {
+        let name = format!(
+            r"\\.\pipe\discord-vr-context-error-{}",
+            uuid::Uuid::new_v4()
+        );
+        let mut server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)
+            .unwrap();
+        let client = ClientOptions::new().open(&name).unwrap();
+        server.connect().await.unwrap();
+        let peer = tokio::spawn(async move {
+            let mut header = [0u8; 8];
+            tokio::time::timeout(Duration::from_secs(2), server.read_exact(&mut header))
+                .await
+                .unwrap()
+                .unwrap();
+            let mut bytes = vec![0; u32::from_le_bytes(header[4..].try_into().unwrap()) as usize];
+            server.read_exact(&mut bytes).await.unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(request["cmd"], "GET_CHANNEL");
+            let response = serde_json::json!({"cmd":"GET_CHANNEL","nonce":request["nonce"],"evt":"ERROR","data":{"code":4006}});
+            let bytes = serde_json::to_vec(&response).unwrap();
+            server.write_all(&1i32.to_le_bytes()).await.unwrap();
+            server
+                .write_all(&(bytes.len() as u32).to_le_bytes())
+                .await
+                .unwrap();
+            server.write_all(&bytes).await.unwrap();
+            sleep(Duration::from_millis(100)).await;
+        });
+        let (sender, mut rx, connected) =
+            crate::vr::create_xsoverlay_channel(Client::new(), Arc::new(AtomicBool::new(false)));
+        connected.store(true, Ordering::SeqCst);
+        let mut notifier = DiscordRPCNotifier::new(Config::default(), sender, Client::new());
+        notifier.ipc = DiscordIPC::from_stream(client);
+        for channel in ["100", "100", "300"] {
+            notifier.handle_notification(serde_json::json!({"channel_id":channel,"message":{"author":{"username":"Alice"},"content":"hello"}}), EVT_NOTIFICATION_CREATE).await;
+            assert_eq!(rx.recv().await.unwrap().content, "hello");
+        }
+        assert!(!notifier.channel_cache.can_request());
+        peer.await.unwrap();
     }
 
     #[tokio::test]

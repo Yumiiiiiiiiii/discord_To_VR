@@ -1,6 +1,6 @@
 [package]
 name = "discord-vr-desktop"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Discord notifications in VR — Tauri desktop app"
 
@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 windows-sys = { version = "0.59", features = ["Win32_UI_Controls_Dialogs", "Win32_UI_Shell"] }
 tauri-plugin-updater = "2"
+tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

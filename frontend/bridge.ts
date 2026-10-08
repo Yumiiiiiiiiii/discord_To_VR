@@ -1,5 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 export type ReceiveMode = "normal" | "whitelist" | "auto";
+export type ThemePreference = "system" | "light" | "dark";
 export type BotStatus =
   | "disabled"
   | "connecting"
@@ -13,6 +14,7 @@ export type BotStatus =
   | "missing_user"
   | "account_mismatch";
 export interface Status {
+  theme: ThemePreference;
   discord: number;
   overlay: boolean;
   privacy: boolean;
@@ -35,6 +37,7 @@ export type DebugOutcome = "received_notification" | "received_message" | "filte
 export interface DebugCounts { received: number; filtered: number; queued: number; validated: number; sent: number; dropped: number; lastReceivedAtMs: number | null; }
 export interface DebugSnapshot { startedAtMs: number; live: DebugCounts; tests: DebugCounts; events: {id: number; atMs: number; source: "live" | "simulation" | "overlay_test" | "system"; outcome: DebugOutcome;}[]; }
 export interface Settings {
+  theme: ThemePreference;
   clientId: string;
   secretSet: boolean;
   redirectUri: string;
@@ -85,6 +88,7 @@ export function channelIdFromInput(text: string): string | null {
   return id;
 }
 const previewStatus: Status = {
+  theme: "system",
   discord: 2,
   overlay: true,
   privacy: false,
@@ -104,6 +108,7 @@ const previewStatus: Status = {
   debugEnabled: !desktop && new URLSearchParams(window.location.search).has("debug"),
 };
 let previewSettings: Settings = {
+  theme: "system",
   clientId: "123456789012345678",
   secretSet: true,
   redirectUri: "http://localhost/",
@@ -141,7 +146,8 @@ export async function api<T>(
   if (["get_debug_snapshot","clear_debug_events","run_debug_receive_test"].includes(command) && !previewStatus.debugEnabled) throw "この操作は -debug を付けて起動した場合だけ使えます。";
   // Browser preview is isolated: it never accesses files, accounts or services.
   switch (command) {
-    case "get_update_status": return {currentVersion:"0.2.0",autoUpdate:previewAutoUpdate,supported:false,canCheck:false,disabledReason:"画面プレビューでは更新の通信・適用を行いません。",phase:"idle",version:null,notes:null,downloaded:0,total:null,checkedAtMs:null,message:null} as T;
+    case "preview_theme": return undefined as T;
+    case "get_update_status": return {currentVersion:"0.2.1",autoUpdate:previewAutoUpdate,supported:false,canCheck:false,disabledReason:"画面プレビューでは更新の通信・適用を行いません。",phase:"idle",version:null,notes:null,downloaded:0,total:null,checkedAtMs:null,message:null} as T;
     case "set_auto_update": previewAutoUpdate=Boolean(args?.enabled); return undefined as T;
     case "check_updates": throw "画面プレビューでは更新の通信・適用を行いません。";
     case "get_debug_snapshot": return structuredClone(previewDebug) as T;
@@ -252,6 +258,7 @@ export async function api<T>(
         botTokenSet,
       };
       previewStatus.privacy = input.privacyMode;
+      previewStatus.theme = input.theme;
       previewStatus.paused = false;
       previewStatus.configured = true;
       previewStatus.receiveMode = input.receiveMode;
