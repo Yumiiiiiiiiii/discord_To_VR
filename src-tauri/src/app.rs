@@ -1,5 +1,5 @@
 use discord_vr_core::{
-    config::{self, Config},
+    config::{self, Config, ThemePreference},
     diagnostics::{Diagnostics, Snapshot, Source},
     discord::{
         notifier::DiscordRPCNotifier,
@@ -72,6 +72,7 @@ impl Services {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    theme: ThemePreference,
     discord: u8,
     overlay: bool,
     privacy: bool,
@@ -94,6 +95,7 @@ pub struct Status {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    theme: ThemePreference,
     client_id: String,
     redirect_uri: String,
     secret_set: bool,
@@ -113,6 +115,7 @@ pub struct Settings {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsInput {
+    theme: ThemePreference,
     client_id: String,
     client_secret: Option<String>,
     redirect_uri: String,
@@ -182,6 +185,7 @@ impl FormError {
 }
 fn public_settings(cfg: &Config, privacy: bool) -> Settings {
     Settings {
+        theme: cfg.theme,
         client_id: if cfg.client_id == "YOUR_CLIENT_ID_HERE" {
             String::new()
         } else {
@@ -254,6 +258,7 @@ impl AppState {
     }
     pub async fn start(&self, app: &AppHandle) {
         let mut controller = self.controller.lock().await;
+        apply_theme(app, controller.config.theme);
         self.start_locked(app, &mut controller).await;
     }
     pub async fn resume(&self, app: &AppHandle) {
@@ -261,6 +266,7 @@ impl AppState {
             return;
         }
         let mut controller = self.controller.lock().await;
+        apply_theme(app, controller.config.theme);
         controller.paused = false;
         self.start_locked(app, &mut controller).await;
     }
@@ -386,6 +392,7 @@ impl AppState {
     async fn status(&self) -> Status {
         let controller = self.controller.lock().await;
         Status {
+            theme: controller.config.theme,
             discord: self.discord.load(Ordering::SeqCst),
             overlay: if self.preview {
                 self.diagnostics.is_none() && !controller.paused
@@ -566,6 +573,7 @@ pub async fn save_settings(
         config::setup_defaults(&state.path).map_err(|_| FormError::storage())?
     };
     cfg.client_id = input.client_id.trim().into();
+    cfg.theme = input.theme;
     cfg.redirect_uri = input.redirect_uri.trim().into();
     if let Some(secret) = input.client_secret.filter(|v| !v.trim().is_empty()) {
         cfg.client_secret = secret.trim().into();
@@ -611,6 +619,7 @@ pub async fn save_settings(
     state.privacy.store(cfg.privacy_mode, Ordering::SeqCst);
     state.sync_tray(&app);
     controller.config = cfg;
+    apply_theme(&app, controller.config.theme);
     state.receive_control.configure(&controller.config);
     controller.problem = None;
     controller.paused = false;
@@ -653,6 +662,7 @@ pub async fn preview_reset_onboarding(state: State<'_, AppState>) -> Result<(), 
 #[tauri::command]
 pub async fn cancel_settings(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let mut controller = state.controller.lock().await;
+    apply_theme(&app, controller.config.theme);
     controller.paused = false;
     state.start_locked(&app, &mut controller).await;
     Ok(())
@@ -838,7 +848,34 @@ pub async fn hide_to_tray(app: AppHandle, state: State<'_, AppState>) -> Result<
 pub fn exit_app(app: AppHandle) {
     app.exit(0);
 }
-fn restore(app: &AppHandle) {
+fn apply_theme(app: &AppHandle, theme: ThemePreference) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_theme(match theme {
+            ThemePreference::System => None,
+            ThemePreference::Light => Some(tauri::Theme::Light),
+            ThemePreference::Dark => Some(tauri::Theme::Dark),
+        });
+    }
+}
+#[tauri::command]
+pub async fn preview_theme(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    theme: ThemePreference,
+) -> Result<(), String> {
+    let controller = state.controller.lock().await;
+    // A stale preview request cannot replace the theme after Save or Cancel.
+    apply_theme(
+        &app,
+        if controller.paused {
+            theme
+        } else {
+            controller.config.theme
+        },
+    );
+    Ok(())
+}
+pub fn restore(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();

@@ -17,23 +17,6 @@ fn main() {
     let debug_enabled = args
         .iter()
         .any(|a| matches!(a.as_str(), "-debug" | "--debug"));
-    let _instance = if preview {
-        None
-    } else {
-        match system::acquire_instance() {
-            Ok(Some(guard)) => Some(guard),
-            Ok(None) => {
-                system::report_error(
-                    "既に起動しています。画面またはトレイの VR アイコンを確認してください。",
-                );
-                return;
-            }
-            Err(_) => {
-                system::report_error("起動状態を確認できませんでした。");
-                return;
-            }
-        }
-    };
     let launch_mode = if args.iter().any(|a| a == "--privacy") {
         Some(true)
     } else if args.iter().any(|a| a == "--normal") {
@@ -42,10 +25,11 @@ fn main() {
         None
     };
     let settings = args.iter().any(|a| a == "--setup");
-    #[cfg(not(debug_assertions))]
-    let context = tauri::generate_context!();
-    #[cfg(debug_assertions)]
     let mut context = tauri::generate_context!();
+    // Preview launches share only a preview instance, never a user's running app.
+    if preview {
+        context.config_mut().identifier.push_str(".preview");
+    }
     // Opt-in inspection of dummy previews only; never present in release builds.
     #[cfg(debug_assertions)]
     if preview {
@@ -57,6 +41,10 @@ fn main() {
         }
     }
     let result = tauri::Builder::default()
+        // Must be first: secondary launches exit before settings, services or updates start.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            app::restore(app);
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             app::get_status,
@@ -65,6 +53,7 @@ fn main() {
             app::run_debug_receive_test,
             app::get_settings,
             app::save_settings,
+            app::preview_theme,
             app::complete_onboarding,
             app::preview_reset_onboarding,
             app::cancel_settings,

@@ -48,7 +48,7 @@ Windows の発行元情報は `src-tauri/tauri.conf.json` の `bundle.publisher`
 
 1. GitHub リポジトリの Settings → Secrets and variables → Actions で、`TAURI_SIGNING_PRIVATE_KEY` に秘密鍵ファイルの**内容**を登録します。ファイルのパスではありません。この環境の鍵はパスワードなしで生成したため、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` は未設定で構いません。
 2. `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` と `package-lock.json` のアプリバージョンを揃えます。ルートの Cargo は共通ライブラリなので変更不要です。
-3. 検証後、同じバージョンの安定版タグ（初回は `v0.2.0`、次回は例えば `v0.2.1`）を公開します。タグの Actions が署名付き NSIS、`.sig`、`latest.json`、ZIP を作り、GitHub Release に添付します。`release` ブランチだけのビルドは Actions の成果物を作り、公開更新を変更しません。
+3. `docs/release-notes/v<バージョン>.md` に前回からの変更点だけを書き、検証後、同じバージョンの安定版タグ（例えば `v0.2.1`）を公開します。タグの Actions が署名付き NSIS、`.sig`、`latest.json`、ZIP を作り、GitHub Release に添付します。リリース文にはその Markdown の内容を使用します。`release` ブランチだけのビルドは Actions の成果物を作り、公開更新を変更しません。
 
 公開版の更新配信には上の設定が必要です。別のリポジトリへ移す場合は配布先の固定 URL と検証スクリプト、鍵を自分のものへ変更してください。
 

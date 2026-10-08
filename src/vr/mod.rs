@@ -99,7 +99,11 @@ impl QueuedNotification {
         let data = NotificationData {
             msg_type: 1,
             timeout: self.duration,
-            height: 175,
+            height: if self.content.contains('\n') {
+                225
+            } else {
+                175
+            },
             opacity: 1.0,
             volume: if audio_path.is_empty() {
                 0.0
@@ -534,10 +538,22 @@ mod tests {
         connected.store(true, Ordering::SeqCst);
         assert!(
             sender
-                .send_notification("Alice", "secret", None, "", 0.8, 8.0)
+                .send_notification(
+                    "Alice",
+                    "Private Server / #private-channel\nsecret",
+                    None,
+                    "",
+                    0.8,
+                    8.0
+                )
                 .await
         );
         let mut queued = rx.recv().await.unwrap();
+        let original: serde_json::Value =
+            serde_json::from_str(&queued.to_json("").unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(original["jsonData"].as_str().unwrap()).unwrap();
+        assert_eq!(data["height"], 225);
         privacy.store(true, Ordering::SeqCst);
         queued.redact();
         let envelope: serde_json::Value =
@@ -548,6 +564,8 @@ mod tests {
         assert_eq!(data["timeout"], 8.0);
         assert_eq!(data["volume"], 0.0);
         assert!(!envelope.to_string().contains("secret"));
+        assert!(!envelope.to_string().contains("Private Server"));
+        assert!(!envelope.to_string().contains("private-channel"));
         for _ in 0..QUEUE_CAPACITY {
             assert!(
                 sender

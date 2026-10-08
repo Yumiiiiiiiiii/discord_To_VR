@@ -39,6 +39,7 @@ import {
   type SettingsInput,
   type Status,
   type ReceiveMode,
+  type ThemePreference,
 } from "./bridge";
 import "./styles.css";
 import { Onboarding } from "./onboarding";
@@ -53,6 +54,7 @@ type Form = Settings & {
   clearBotToken: boolean;
 };
 const emptyStatus: Status = {
+  theme: "system",
   discord: 0,
   overlay: false,
   privacy: false,
@@ -114,6 +116,12 @@ function App() {
   const [tab, setTab] = useState<Tab>("display");
   const [status, setStatus] = useState<Status>(emptyStatus);
   const [form, setForm] = useState<Form | null>(null);
+  const theme = form?.theme ?? status.theme;
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    if (desktop) void api("preview_theme", { theme }).catch(error =>
+      setToast({ message: errorMessage(error), error: true }));
+  }, [theme]);
   const [tutorialSettings, setTutorialSettings] = useState<Settings | null>(null);
   const [tutorialResume, setTutorialResume] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -309,7 +317,8 @@ function App() {
       botToken: botToken.trim() || null,
     };
     try {
-      await api("save_settings", { input });
+      const saved = await api<Settings>("save_settings", { input });
+      setStatus(previous => ({ ...previous, theme: saved.theme }));
       setForm(null);
       setPage("home");
       notify("設定を保存しました。接続を再開します。");
@@ -468,7 +477,7 @@ function App() {
             アプリを終了
           </button>
           <small className="version">
-            Discord to VR <span>v{updateStatus?.currentVersion??"0.2.0"}</span>
+            Discord to VR <span>v{updateStatus?.currentVersion??"0.2.1"}</span>
           </small>
         </div>
       </aside>
@@ -789,6 +798,7 @@ function App() {
                           <strong>
                             {status.privacy ? "新しい通知" : "サンプルさん"}
                           </strong>
+                          {!status.privacy && <p className="sample-context">サンプルサーバー / #general</p>}
                           <p>
                             {status.privacy
                               ? "新しいメッセージがあります"
@@ -799,7 +809,7 @@ function App() {
                     </div>
                     <div className="stage-caption">
                       {status.privacy
-                        ? "送信者名・本文・アイコンは表示されません"
+                        ? "送信者名・会話の場所・本文・アイコンは表示されません"
                         : "VR に表示される通知のイメージです"}
                     </div>
                   </div>
@@ -1198,10 +1208,23 @@ function App() {
                     >
                       <div className="section-heading">
                         <div>
-                          <h2>通知の見え方</h2>
-                          <p>VR 内の読みやすさに合わせて調整します。</p>
+                          <h2>画面と通知の見え方</h2>
+                          <p>アプリのテーマと VR 内の表示を調整します。</p>
                         </div>
                         <Monitor size={21} />
+                      </div>
+                      <div className="setting-row">
+                        <div>
+                          <label htmlFor="theme">アプリのテーマ</label>
+                          <p id="theme-help">システムは OS のライト・ダーク設定に従います。変更は「保存」で確定します。</p>
+                        </div>
+                        <select id="theme" name="theme" className="theme-select"
+                          aria-describedby="theme-help" value={form.theme}
+                          onChange={event => change("theme", event.target.value as ThemePreference)}>
+                          <option value="system">システム（初期設定）</option>
+                          <option value="light">ライト</option>
+                          <option value="dark">ダーク</option>
+                        </select>
                       </div>
                       {numberField(
                         "notificationTimeout",
@@ -1230,7 +1253,7 @@ function App() {
                       <div className="setting-row">
                         <div>
                           <label htmlFor="privacyMode">配信用表示</label>
-                          <p>送信者名・本文・アイコンを隠します。</p>
+                          <p>送信者名・サーバー名・チャンネル名・本文・アイコンを隠します。</p>
                         </div>
                         <button
                           type="button"
