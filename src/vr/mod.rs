@@ -1,22 +1,23 @@
+use crate::diagnostics::{Outcome, Trace};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::time::{interval, sleep};
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::time::{interval, sleep, timeout, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-// 使いまわし用の文字列定数
 const XSOVERLAY_WS_URL: &str = "ws://127.0.0.1:42070/?client=discord_To_VR";
 const SENDER_NAME: &str = "discord_To_VR";
-const TARGET_NAME: &str = "xsoverlay";
-const CMD_SEND_NOTIFICATION: &str = "SendNotification";
-const DEFAULT_ICON_VAL: &str = "default";
+const QUEUE_CAPACITY: usize = 64;
+const MAX_ICON_BYTES: usize = 256 * 1024;
+const MAX_ICON_CACHE: usize = 64;
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// XSOverlay に送る通知データの構造体
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NotificationData<'a> {
@@ -33,46 +34,168 @@ struct NotificationData<'a> {
     icon: &'a str,
 }
 
-/// WebSocket メッセージフレームの構造体
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WsMessage<'a> {
-    sender: &'a str,
-    target: &'a str,
-    command: &'a str,
+struct WsMessage {
+    sender: &'static str,
+    target: &'static str,
+    command: &'static str,
     json_data: String,
 }
 
-/// アプリ内から XSOverlay へ通知を送信するためのハンドル
+pub struct QueuedNotification {
+    pub(crate) title: String,
+    pub(crate) content: String,
+    icon_url: String,
+    sound_path: String,
+    volume: f64,
+    duration: f64,
+    expires: Instant,
+    gate: Option<crate::discord::receive::NotificationGate>,
+    trace: Option<Trace>,
+}
+
+impl QueuedNotification {
+    fn finish(&mut self, outcome: Outcome) {
+        if let Some(trace) = self.trace.take() {
+            trace.record(outcome);
+        }
+    }
+    /// Exercises queued policy, privacy and serialization without network or icon downloads.
+    pub fn validate_without_sending(mut self, privacy: bool) {
+        if self.expires <= Instant::now() {
+            self.finish(Outcome::DropExpired);
+            return;
+        }
+        if !self.allowed() {
+            self.finish(Outcome::DropPolicy);
+            return;
+        }
+        if privacy {
+            self.redact();
+        }
+        let outcome = if self.to_json("").is_ok() {
+            Outcome::Validated
+        } else {
+            Outcome::DropInvalid
+        };
+        self.finish(outcome);
+    }
+    pub(crate) fn allowed(&self) -> bool {
+        self.gate.as_ref().is_none_or(|gate| gate.allows())
+    }
+    fn redact(&mut self) {
+        self.title = "Discord".into();
+        self.content = "新しいメッセージがあります".into();
+        self.icon_url.clear();
+    }
+
+    fn to_json(&self, icon: &str) -> Result<String, serde_json::Error> {
+        let audio_path = if self.sound_path.is_empty() || self.volume <= 0.0 {
+            ""
+        } else {
+            &self.sound_path
+        };
+        let data = NotificationData {
+            msg_type: 1,
+            timeout: self.duration,
+            height: 175,
+            opacity: 1.0,
+            volume: if audio_path.is_empty() {
+                0.0
+            } else {
+                self.volume.clamp(0.0, 1.0)
+            },
+            audio_path,
+            title: &self.title,
+            content: &self.content,
+            use_base64_icon: !icon.is_empty(),
+            icon: if icon.is_empty() { "default" } else { icon },
+        };
+        serde_json::to_string(&WsMessage {
+            sender: SENDER_NAME,
+            target: "xsoverlay",
+            command: "SendNotification",
+            json_data: serde_json::to_string(&data)?,
+        })
+    }
+}
+
+impl Drop for QueuedNotification {
+    fn drop(&mut self) {
+        self.finish(Outcome::DropStopped);
+    }
+}
+
 #[derive(Clone)]
 pub struct XsOverlaySender {
-    tx: UnboundedSender<String>,
+    tx: Sender<QueuedNotification>,
     http_client: Client,
     is_connected: Arc<AtomicBool>,
+    privacy: Arc<AtomicBool>,
+    gate: Option<crate::discord::receive::NotificationGate>,
+    trace: Option<Trace>,
+    diagnostic_only: bool,
 }
 
 impl XsOverlaySender {
-    /// 画像URLをダウンロードして Base64 文字列へ変換する
-    pub async fn get_base64_icon(&self, url: &str) -> String {
-        if url.is_empty() {
-            return String::new();
-        }
-        match self
-            .http_client
-            .get(url)
-            .timeout(Duration::from_secs(3))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                Ok(bytes) => base64::engine::general_purpose::STANDARD.encode(&bytes),
-                Err(_) => String::new(),
-            },
-            _ => String::new(),
+    pub fn with_trace(&self, trace: Trace) -> Self {
+        let mut sender = self.clone();
+        sender.trace = Some(trace);
+        sender
+    }
+    fn record(&self, outcome: Outcome) {
+        if let Some(trace) = &self.trace {
+            trace.record(outcome);
         }
     }
+    pub fn with_notification_gate(&self, gate: crate::discord::receive::NotificationGate) -> Self {
+        let mut sender = self.clone();
+        sender.gate = Some(gate);
+        sender
+    }
+    pub fn privacy_mode(&self) -> bool {
+        self.privacy.load(Ordering::SeqCst)
+    }
 
-    /// 通知データをJSONに変換し、WebSocketタスクの送信キューへ入れる
+    async fn get_base64_icon(&self, url: &str) -> String {
+        if !allowed_icon_url(url) {
+            return String::new();
+        }
+        let fetch = async {
+            let mut response = self.http_client.get(url).send().await.ok()?;
+            if !response.status().is_success()
+                || response
+                    .content_length()
+                    .is_some_and(|size| size > MAX_ICON_BYTES as u64)
+                || !response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|h| h.to_str().ok())
+                    .is_some_and(|s| s.starts_with("image/"))
+            {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.ok()? {
+                if bytes.len() + chunk.len() > MAX_ICON_BYTES {
+                    return None;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if bytes.is_empty() {
+                return None;
+            }
+            Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+        };
+        timeout(Duration::from_secs(1), fetch)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Queue immediately. Icon downloads happen in the overlay task, not in RPC.
     pub async fn send_notification(
         &self,
         title: &str,
@@ -80,136 +203,371 @@ impl XsOverlaySender {
         icon_url: Option<&str>,
         sound_path: &str,
         volume: f64,
-    ) {
-        if !self.is_connected.load(Ordering::SeqCst) {
-            return;
+        duration: f64,
+    ) -> bool {
+        if self.gate.as_ref().is_some_and(|gate| !gate.allows()) {
+            self.record(Outcome::DropPolicy);
+            return false;
         }
-
-        let icon_url_str = icon_url.unwrap_or("");
-        let base64_icon = self.get_base64_icon(icon_url_str).await;
-        let use_base64 = !base64_icon.is_empty();
-        let icon_val = if use_base64 {
-            base64_icon.as_str()
-        } else {
-            DEFAULT_ICON_VAL
+        if !self.diagnostic_only && !self.is_connected.load(Ordering::SeqCst) {
+            self.record(Outcome::DropNoOverlay);
+            eprintln!("⚠️ XSOverlay 未接続のため通知を表示できませんでした。");
+            return false;
+        }
+        let mut notification = QueuedNotification {
+            title: title.into(),
+            content: content.into(),
+            icon_url: icon_url.unwrap_or("").into(),
+            sound_path: sound_path.into(),
+            volume,
+            duration,
+            expires: Instant::now() + Duration::from_secs(15),
+            gate: self.gate.clone(),
+            trace: self.trace.clone(),
         };
-
-        let audio_path = if sound_path.is_empty() || volume <= 0.0 {
-            ""
-        } else {
-            sound_path
-        };
-        let vol = if audio_path.is_empty() { 0.0 } else { volume };
-
-        let notification_data = NotificationData {
-            msg_type: 1,
-            timeout: 5.0,
-            height: 175,
-            opacity: 1.0,
-            volume: vol,
-            audio_path,
-            title,
-            content,
-            use_base64_icon: use_base64,
-            icon: icon_val,
-        };
-
-        let json_data = match serde_json::to_string(&notification_data) {
-            Ok(j) => j,
-            Err(_) => return,
-        };
-
-        let ws_msg = WsMessage {
-            sender: SENDER_NAME,
-            target: TARGET_NAME,
-            command: CMD_SEND_NOTIFICATION,
-            json_data,
-        };
-
-        if let Ok(ws_json) = serde_json::to_string(&ws_msg) {
-            let _ = self.tx.send(ws_json);
+        if self.privacy_mode() {
+            notification.redact();
+        }
+        match self.tx.try_reserve() {
+            Ok(permit) => {
+                self.record(Outcome::Queued);
+                permit.send(notification);
+                true
+            }
+            Err(_) => {
+                notification.finish(Outcome::DropFull);
+                eprintln!("⚠️ 通知キューが満杯、または送信タスクが終了しています。");
+                false
+            }
         }
     }
 }
 
-/// XSOverlay と通信するためのハンドルと受信チャネルを作成する
+fn allowed_icon_url(url: &str) -> bool {
+    reqwest::Url::parse(url).ok().is_some_and(|u| {
+        u.scheme() == "https"
+            && matches!(
+                u.host_str(),
+                Some("cdn.discordapp.com" | "media.discordapp.net")
+            )
+            && u.port().is_none()
+            && u.username().is_empty()
+            && u.password().is_none()
+    })
+}
+
 pub fn create_xsoverlay_channel(
     http_client: Client,
+    privacy: Arc<AtomicBool>,
 ) -> (
     XsOverlaySender,
-    UnboundedReceiver<String>,
+    Receiver<QueuedNotification>,
     Arc<AtomicBool>,
 ) {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
     let is_connected = Arc::new(AtomicBool::new(false));
     let sender = XsOverlaySender {
         tx,
         http_client,
         is_connected: is_connected.clone(),
+        privacy,
+        gate: None,
+        trace: None,
+        diagnostic_only: false,
     };
     (sender, rx, is_connected)
 }
 
-/// XSOverlay との WebSocket 接続を維持・再接続し、メッセージの送受信を行うメインループ
+/// A local receive-check queue. Never represents an XSOverlay connection.
+pub fn create_diagnostic_channel(
+    http_client: Client,
+    privacy: Arc<AtomicBool>,
+) -> (XsOverlaySender, Receiver<QueuedNotification>) {
+    let (mut sender, rx, _) = create_xsoverlay_channel(http_client, privacy);
+    sender.diagnostic_only = true;
+    (sender, rx)
+}
+
+/// Validate incoming messages in memory without sockets, images or VR output.
+pub async fn receive_diagnostic_loop(
+    mut rx: Receiver<QueuedNotification>,
+    privacy: Arc<AtomicBool>,
+) {
+    while let Some(note) = rx.recv().await {
+        note.validate_without_sending(privacy.load(Ordering::SeqCst));
+    }
+}
+
+struct ConnectionGuard(Arc<AtomicBool>);
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 pub async fn xsoverlay_loop(
-    mut rx: UnboundedReceiver<String>,
+    rx: Receiver<QueuedNotification>,
     is_connected: Arc<AtomicBool>,
     sender: XsOverlaySender,
 ) {
+    xsoverlay_loop_at(rx, is_connected, sender, XSOVERLAY_WS_URL).await;
+}
+
+async fn xsoverlay_loop_at(
+    mut rx: Receiver<QueuedNotification>,
+    is_connected: Arc<AtomicBool>,
+    sender: XsOverlaySender,
+    url: &str,
+) {
+    let _guard = ConnectionGuard(is_connected.clone());
+    let mut icon_cache = HashMap::<String, String>::new();
     loop {
-        match connect_async(XSOVERLAY_WS_URL).await {
-            Ok((ws_stream, _)) => {
+        match timeout(SEND_TIMEOUT, connect_async(url)).await {
+            Ok(Ok((ws_stream, _))) => {
                 is_connected.store(true, Ordering::SeqCst);
-                println!("✅ [XSOverlay] WebSocketへの接続が完了しました！");
-
+                println!("✅ [XSOverlay] 接続しました。Discord の接続状態は別途表示されます。");
                 sender
-                    .send_notification(
-                        SENDER_NAME,
-                        "🚀 接続完了！Discordのメッセージ通知を監視します。",
-                        Some("https://cdn.discordapp.com/embed/avatars/0.png"),
-                        "",
-                        0.0,
-                    )
+                    .send_notification(SENDER_NAME, "XSOverlay に接続しました", None, "", 0.0, 5.0)
                     .await;
-                println!("🔔 [XSOverlay] 接続確認用テスト通知をVRに送信しました。");
-
                 let (mut ws_tx, mut ws_rx) = ws_stream.split();
                 let mut ping_interval = interval(Duration::from_secs(10));
-
                 loop {
                     tokio::select! {
-                        msg_opt = rx.recv() => {
-                            match msg_opt {
-                                Some(msg) => {
-                                    if let Err(_) = ws_tx.send(Message::Text(msg.into())).await {
-                                        break;
-                                    }
+                        queued = rx.recv() => {
+                            let Some(mut notification) = queued else { return };
+                            if notification.expires <= Instant::now() { notification.finish(Outcome::DropExpired); continue; }
+                            if !notification.allowed() { notification.finish(Outcome::DropPolicy); continue; }
+                            if sender.privacy_mode() { notification.redact(); }
+                            let mut icon = if let Some(cached) = icon_cache.get(&notification.icon_url) {
+                                cached.clone()
+                            } else {
+                                let icon = sender.get_base64_icon(&notification.icon_url).await;
+                                if !icon.is_empty() {
+                                    if icon_cache.len() >= MAX_ICON_CACHE { icon_cache.clear(); }
+                                    icon_cache.insert(notification.icon_url.clone(), icon.clone());
                                 }
-                                None => return,
+                                icon
+                            };
+                            // The user may switch modes during an icon download.
+                            if sender.privacy_mode() {
+                                notification.redact();
+                                icon.clear();
                             }
+                            if notification.expires <= Instant::now() { notification.finish(Outcome::DropExpired); continue; }
+                            if !notification.allowed() { notification.finish(Outcome::DropPolicy); continue; }
+                            let Ok(json) = notification.to_json(&icon) else { notification.finish(Outcome::DropInvalid); continue };
+                            if !matches!(timeout(SEND_TIMEOUT,
+                                ws_tx.send(Message::Text(json.into()))).await, Ok(Ok(()))) {
+                                notification.finish(Outcome::DropSendFailed);
+                                break;
+                            }
+                            notification.finish(Outcome::Sent);
                         }
                         _ = ping_interval.tick() => {
-                            if let Err(_) = ws_tx.send(Message::Ping(vec![].into())).await {
+                            if !matches!(timeout(SEND_TIMEOUT,
+                                ws_tx.send(Message::Ping(Vec::new().into()))).await, Ok(Ok(()))) {
                                 break;
                             }
                         }
-                        ws_evt = ws_rx.next() => {
-                            match ws_evt {
-                                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
-                                    break;
+                        event = ws_rx.next() => {
+                            match event {
+                                Some(Ok(Message::Ping(bytes))) => {
+                                    if !matches!(timeout(SEND_TIMEOUT,
+                                        ws_tx.send(Message::Pong(bytes))).await, Ok(Ok(()))) {
+                                        break;
+                                    }
                                 }
+                                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                                 _ => {}
                             }
                         }
                     }
                 }
-
                 is_connected.store(false, Ordering::SeqCst);
+                eprintln!("⚠️ [XSOverlay] 切断されました。3 秒後に再接続します。");
             }
-            Err(_) => {
+            _ => {
                 is_connected.store(false, Ordering::SeqCst);
+                eprintln!("⚠️ [XSOverlay] 接続待機中。XSOverlay と通知用 WebSocket の設定を確認してください。");
             }
         }
+        // Do not replay messages from a disconnected session.
+        while let Ok(mut notification) = rx.try_recv() {
+            notification.finish(Outcome::DropDisconnected);
+        }
         sleep(Duration::from_secs(3)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::{Diagnostics, Source};
+
+    #[tokio::test]
+    async fn debug_send_records_websocket_success_without_exposing_payloads() {
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut messages = Vec::new();
+            while messages.len() < 2 {
+                if let Some(Ok(Message::Text(bytes))) = ws.next().await {
+                    messages.push(bytes);
+                }
+            }
+            messages
+        });
+        let privacy = Arc::new(AtomicBool::new(true));
+        let log = Diagnostics::default();
+        let (sender, rx, connected) = create_xsoverlay_channel(Client::new(), privacy);
+        let sender = sender.with_trace(log.trace(Source::System));
+        let loop_sender = sender.clone();
+        let loop_connected = connected.clone();
+        let task = tokio::spawn(async move {
+            xsoverlay_loop_at(rx, loop_connected, loop_sender, &format!("ws://{address}")).await;
+        });
+        timeout(Duration::from_secs(3), async {
+            while !connected.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut notifier = crate::discord::notifier::DiscordRPCNotifier::new(
+            crate::config::Config::default(),
+            sender,
+            Client::new(),
+        )
+        .with_trace(log.trace(Source::Live));
+        notifier.inject_test_notification(false, "100").await;
+        let messages = timeout(Duration::from_secs(3), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(3), async {
+            while log.snapshot().live.sent != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let snapshot = log.snapshot();
+        assert_eq!(snapshot.live.received, 1);
+        assert_eq!(snapshot.live.queued, 1);
+        assert_eq!(snapshot.live.sent, 1);
+        assert_eq!(snapshot.tests.received, 0);
+        let json: serde_json::Value = serde_json::from_str(&messages[1]).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(json["jsonData"].as_str().unwrap()).unwrap();
+        assert_eq!(data["title"], "Discord");
+        assert_eq!(data["content"], "新しいメッセージがあります");
+        let metadata = serde_json::to_string(&snapshot).unwrap();
+        assert!(!metadata.contains("テスト用サンプル"));
+        assert!(!metadata.contains("新しいメッセージ"));
+        assert!(!metadata.contains("channel"));
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn debug_queue_reports_disconnection_and_final_policy_changes() {
+        use crate::{
+            config::Config,
+            discord::receive::{ReceiveControl, ReceiveMode},
+        };
+        let log = Diagnostics::default();
+        let (sender, mut rx, connected) =
+            create_xsoverlay_channel(Client::new(), Arc::new(AtomicBool::new(false)));
+        let control = ReceiveControl::new(&Config::default());
+        let sender = sender
+            .with_trace(log.trace(Source::Live))
+            .with_notification_gate(control.gate(Some("100"), false));
+        assert!(
+            !sender
+                .send_notification("dummy", "dummy", None, "", 0.0, 5.0)
+                .await
+        );
+        connected.store(true, Ordering::SeqCst);
+        assert!(
+            sender
+                .send_notification("dummy", "dummy", None, "", 0.0, 5.0)
+                .await
+        );
+        control.set_mode(ReceiveMode::Whitelist);
+        rx.recv().await.unwrap().validate_without_sending(false);
+        let snapshot = log.snapshot();
+        assert_eq!(snapshot.live.dropped, 2);
+        assert_eq!(snapshot.live.sent, 0);
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|e| e.outcome == Outcome::DropPolicy));
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|e| e.outcome == Outcome::DropNoOverlay));
+    }
+
+    #[test]
+    fn icon_downloads_only_use_discord_https_hosts() {
+        assert!(allowed_icon_url(
+            "https://cdn.discordapp.com/avatars/1/2.png"
+        ));
+        for url in [
+            "http://cdn.discordapp.com/a.png",
+            "https://127.0.0.1/a.png",
+            "https://cdn.discordapp.com.evil.example/a.png",
+            "file:///C:/secret",
+            "https://user:pass@cdn.discordapp.com/a.png",
+        ] {
+            assert!(!allowed_icon_url(url));
+        }
+    }
+
+    #[tokio::test]
+    async fn privacy_toggle_redacts_queued_payload_and_bounds_queue() {
+        let privacy = Arc::new(AtomicBool::new(false));
+        let (sender, mut rx, connected) = create_xsoverlay_channel(Client::new(), privacy.clone());
+        connected.store(true, Ordering::SeqCst);
+        assert!(
+            sender
+                .send_notification("Alice", "secret", None, "", 0.8, 8.0)
+                .await
+        );
+        let mut queued = rx.recv().await.unwrap();
+        privacy.store(true, Ordering::SeqCst);
+        queued.redact();
+        let envelope: serde_json::Value =
+            serde_json::from_str(&queued.to_json("").unwrap()).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(envelope["jsonData"].as_str().unwrap()).unwrap();
+        assert_eq!(data["title"], "Discord");
+        assert_eq!(data["timeout"], 8.0);
+        assert_eq!(data["volume"], 0.0);
+        assert!(!envelope.to_string().contains("secret"));
+        for _ in 0..QUEUE_CAPACITY {
+            assert!(
+                sender
+                    .send_notification("Alice", "secret", None, "", 0.0, 5.0)
+                    .await
+            );
+        }
+        assert!(
+            !sender
+                .send_notification("Alice", "secret", None, "", 0.0, 5.0)
+                .await
+        );
+        let queued = rx.recv().await.unwrap();
+        assert_eq!(queued.title, "Discord");
+        assert_eq!(queued.content, "新しいメッセージがあります");
+        connected.store(false, Ordering::SeqCst);
+        assert!(
+            !sender
+                .send_notification("Alice", "secret", None, "", 0.0, 5.0)
+                .await
+        );
     }
 }

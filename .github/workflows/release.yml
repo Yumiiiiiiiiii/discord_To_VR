@@ -2,62 +2,92 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - release
-    tags:
-      - 'v*'
+    branches: [release]
+    tags: ['v*']
+
+permissions:
+  contents: read
 
 jobs:
   build-and-release:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/tauri
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry and target
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate release version
+        run: node scripts/release-manifest.mjs --validate
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build release binary
-        run: cargo build --release
-
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Regression tests
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/release-manifest.test.mjs
+      - name: Build signed release
+        if: github.ref_type == 'tag'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'Set the TAURI_SIGNING_PRIVATE_KEY repository secret before publishing.'
+          }
+          npm run desktop:build -- --ci -- --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/release-manifest.mjs
+      - name: Build branch preview without update publication
+        if: github.ref_type != 'tag'
+        run: |
+          $override = Join-Path $env:RUNNER_TEMP 'tauri-preview.json'
+          [IO.File]::WriteAllText($override, '{"bundle":{"createUpdaterArtifacts":false}}')
+          npm run desktop:build -- --ci --config $override -- --locked
+      - name: Verify uninstall data cleanup
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer-hooks.ps1
       - name: Package ZIP archive
         shell: powershell
         run: |
-          # ビルドした実行ファイル (discord_To_VR.exe) のみをZIPに圧縮
-          Compress-Archive -Path "target\release\discord_To_VR.exe" -DestinationPath discord_To_VR.zip -Force
-
-      - name: Generate Tag and Release Name
-        id: tag
-        shell: bash
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "RELEASE_NAME=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "TAG_NAME=release-${{ github.run_number }}" >> $GITHUB_OUTPUT
-            echo "RELEASE_NAME=Release build #${{ github.run_number }} (${{ github.sha }})" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload to GitHub Releases
+          $files = @("target\tauri\release\discord_To_VR.exe", "README.md", "CHANGELOG.md", "config.example.json", "SECURITY.md", "IMPROVEMENTS.md", "LICENSE", "docs")
+          if (Test-Path -LiteralPath "target\tauri\release\WebView2Loader.dll") {
+            $files += "target\tauri\release\WebView2Loader.dll"
+          }
+          Compress-Archive -LiteralPath $files -DestinationPath discord_To_VR-tauri.zip -Force
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: discord-to-vr-windows
+          path: |
+            discord_To_VR-tauri.zip
+            target/tauri/release/bundle/nsis/*-setup.exe
+            target/tauri/release/bundle/nsis/*-setup.exe.sig
+            latest.json
+      - name: Publish stable GitHub release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
-          name: ${{ steps.tag.outputs.RELEASE_NAME }}
-          body: |
-            ### 📝 更新内容 (Commit Message)
-            ${{ github.event.head_commit.message }}
-          files: discord_To_VR.zip
+          files: |
+            discord_To_VR-tauri.zip
+            target/tauri/release/bundle/nsis/*-setup.exe
+            target/tauri/release/bundle/nsis/*-setup.exe.sig
+            latest.json
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          make_latest: true
