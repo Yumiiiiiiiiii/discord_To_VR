@@ -187,9 +187,12 @@ mod tests {
         tokio::time::advance(Duration::from_secs(31)).await;
         assert!(cache.can_request());
         assert_eq!(cache.get("failure"), None);
-        assert_eq!(cache.get("199"), Some(Some("name".into())));
+        // Equal timestamps permit any tied entry to be evicted. Verify TTL on
+        // a fresh entry instead of assuming a particular HashMap iteration order.
+        cache.insert("fresh".into(), Some("name".into()));
+        assert_eq!(cache.get("fresh"), Some(Some("name".into())));
         tokio::time::advance(Duration::from_secs(300)).await;
-        assert_eq!(cache.get("199"), None);
+        assert_eq!(cache.get("fresh"), None);
         cache.clear();
         assert!(cache.entries.is_empty());
     }
