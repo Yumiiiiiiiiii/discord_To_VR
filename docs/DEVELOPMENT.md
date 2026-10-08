@@ -50,7 +50,7 @@ Windows の発行元情報は `src-tauri/tauri.conf.json` の `bundle.publisher`
 2. `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` と `package-lock.json` のアプリバージョンを揃えます。ルートの Cargo は共通ライブラリなので変更不要です。
 3. 検証後、同じバージョンの安定版タグ（初回は `v0.2.0`、次回は例えば `v0.2.1`）を公開します。タグの Actions が署名付き NSIS、`.sig`、`latest.json`、ZIP を作り、GitHub Release に添付します。`release` ブランチだけのビルドは Actions の成果物を作り、公開更新を変更しません。
 
-秘密鍵の GitHub 登録、タグの push、Release 公開はこのローカル実装では行っていません。公開版の更新配信には上の設定が必要です。別のリポジトリへ移す場合は配布先の固定 URL と検証スクリプト、鍵を自分のものへ変更してください。
+公開版の更新配信には上の設定が必要です。別のリポジトリへ移す場合は配布先の固定 URL と検証スクリプト、鍵を自分のものへ変更してください。
 
 ## ローカルで署名付きビルドを作る
 
