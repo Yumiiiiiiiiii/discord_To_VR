@@ -1,11 +1,16 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {manifest,validateVersion} from "./release-manifest.mjs";
-const config={version:"0.2.0",bundle:{createUpdaterArtifacts:true},plugins:{updater:{requireSignedVersion:true,endpoints:["https://github.com/Yumiiiiiiiiii/discord_To_VR/releases/latest/download/latest.json"]}}};
+import {manifest,updaterEndpoints,validateVersion} from "./release-manifest.mjs";
+const config={version:"0.2.0",bundle:{createUpdaterArtifacts:true},plugins:{updater:{requireSignedVersion:true,endpoints:updaterEndpoints}}};
 test("release tags must match the app and installer versions",()=>{
   assert.equal(validateVersion(config,'version = "0.2.0"',{version:"0.2.0"},"v0.2.0"),"0.2.0");
   assert.throws(()=>validateVersion(config,'version = "0.2.0"',{version:"0.2.0"},"v0.3.0"));
   assert.throws(()=>validateVersion(config,'version = "0.1.0"',{version:"0.2.0"}));
+  const invalid=structuredClone(config);
+  invalid.plugins.updater.endpoints.reverse();
+  assert.throws(()=>validateVersion(invalid,'version = "0.2.0"',{version:"0.2.0"}));
+  invalid.plugins.updater.endpoints=["https://example.com/latest.json"];
+  assert.throws(()=>validateVersion(invalid,'version = "0.2.0"',{version:"0.2.0"}));
 });
 test("manifest matches published GitHub filenames and rejects invalid signatures or installers",()=>{
   const signature=Buffer.from("trusted comment: version:0.2.0\n").toString("base64");

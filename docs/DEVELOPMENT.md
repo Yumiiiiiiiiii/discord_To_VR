@@ -17,7 +17,7 @@ cargo test --locked
 cargo test --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
 cargo clippy --locked --all-targets -- -D warnings
 cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
-node --test scripts/release-manifest.test.mjs
+node --test scripts/release-manifest.test.mjs scripts/publish-update-feed.test.mjs
 ```
 
 インストーラーを一度ビルドすると、Tauri の NSIS を使ってアンインストール時の設定削除を検証できます。
@@ -44,13 +44,23 @@ Windows の発行元情報は `src-tauri/tauri.conf.json` の `bundle.publisher`
 %LOCALAPPDATA%\DiscordToVR-release-signing\updater.key
 ```
 
-この鍵を安全な場所にバックアップしてください。公開済みアプリへの更新には同じ鍵が必要です。上書き生成やリポジトリへの追加、ZIP への同梱、チャット・Issue への貼り付けはしないでください。
+この鍵を安全な場所にバックアップしてください。公開済みアプリへの更新には同じ鍵が必要です。上書き生成やリポジトリへの追加、配布ファイルへの同梱、チャット・Issue への貼り付けはしないでください。
 
 1. GitHub リポジトリの Settings → Secrets and variables → Actions で、`TAURI_SIGNING_PRIVATE_KEY` に秘密鍵ファイルの**内容**を登録します。ファイルのパスではありません。この環境の鍵はパスワードなしで生成したため、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` は未設定で構いません。
 2. `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` と `package-lock.json` のアプリバージョンを揃えます。ルートの Cargo は共通ライブラリなので変更不要です。
-3. `docs/release-notes/v<バージョン>.md` に前回からの変更点だけを書き、検証後、同じバージョンの安定版タグ（例えば `v0.2.1`）を公開します。タグの Actions が署名付き NSIS、`.sig`、`latest.json`、ZIP を作り、GitHub Release に添付します。リリース文にはその Markdown の内容を使用します。`release` ブランチだけのビルドは Actions の成果物を作り、公開更新を変更しません。
+3. `docs/release-notes/v<バージョン>.md` に前回からの変更点だけを書き、検証後、同じバージョンの安定版タグ（例えば `v0.2.1`）を公開します。タグの Actions が署名付き NSIS インストーラーと更新情報を生成します。次回以降は実行用の ZIP 版と単独の `.sig` を GitHub Release に添付せず、ソースコードは GitHub 標準の「Source code (zip)」「Source code (tar.gz)」から取得します。リリース文にはその Markdown の内容を使用します。`release` ブランチだけのビルドは Actions の成果物を作り、公開更新を変更しません。
 
 公開版の更新配信には上の設定が必要です。別のリポジトリへ移す場合は配布先の固定 URL と検証スクリプト、鍵を自分のものへ変更してください。
+
+## 更新情報の配信先を移す
+
+次の安定版を移行版として、Releases には setup インストーラー・ソースコード・`latest.json` を用意します。その次からは setup・ソースコードだけにし、更新情報は同じリポジトリの `updates` 専用ブランチで配信します。移行版は新しい取得先を優先し、旧 URL も予備の取得先として持ちます。GitHub 標準のソースコード ZIP / tar.gz は実行用 ZIP ではありません。
+
+タグの Actions が、公開済みのインストーラーを確認した後で `updates` ブランチに `latest.json` と `migration.json` を書き込みます。初回は更新情報だけの独立したブランチを作成します。`migration.json` の移行版バージョンを保持し、その版の再実行時だけ Releases にも `latest.json` を添付します。その後の版では自動で添付を省くため、バージョン番号の決め打ちや手動の設定変更は不要です。
+
+配信には Actions 標準の `GITHUB_TOKEN` と `contents: write` を使い、追加の署名鍵や外部サーバーは不要です。古い版への配信やビルド中に更新情報が変わった場合は停止し、ブランチの強制更新は行いません。配信に失敗した場合は同じタグのワークフローを再実行してください。`updates` ブランチを手動で初期化したり、`migration.json` を削除したりしないでください。
+
+0.2.0 / 0.2.1 が移行版を飛ばして残っている場合、移行完了後は一度だけ最新の setup を手動で実行する必要があります。公開済みの 0.2.1 の添付ファイルとタグは変更しません。
 
 ## ローカルで署名付きビルドを作る
 
@@ -72,6 +82,6 @@ npm.cmd run desktop:build -- --ci -- --locked
 node scripts/release-manifest.mjs
 ```
 
-`latest.json` はアプリバージョン・タグ・インストーラー名・署名のバージョンが一致する場合だけ生成します。公開する Release にインストーラーと `.sig` と `latest.json` を添付してください。秘密鍵を紛失した場合、既存の公開鍵を持つアプリへ新しい鍵で自動更新することはできません。
+`latest.json` はアプリバージョン・タグ・インストーラー名・署名のバージョンが一致する場合だけ生成します。署名はこの更新情報に含まれるため、`.sig` の個別添付は不要です。ビルド時の署名生成は引き続き必要で、Actions の成果物には検証用の `.sig` と更新情報を保存します。ローカルビルドは生成までで、配信先への書き込みは行いません。公開はタグの Actions から行ってください。秘密鍵を紛失した場合、既存の公開鍵を持つアプリへ新しい鍵で自動更新することはできません。
 
 仕組みの詳細: [Tauri 2 の Updater](https://v2.tauri.app/plugin/updater/)

@@ -19,11 +19,12 @@ struct Fixture {
 async fn signed_download_rejects_tampering_and_version_replay_and_skips_current_release() {
     let fixture: Fixture =
         serde_json::from_str(include_str!("../tests/fixtures/update-signature.json")).unwrap();
-    for (version, tampered, expected) in [
-        ("0.2.1", false, "valid"),
-        ("0.2.1", true, "invalid"),
-        ("0.2.2", false, "invalid"),
-        ("0.1.0", false, "current"),
+    for (version, tampered, expected, fallback) in [
+        ("0.2.1", false, "valid", false),
+        ("0.2.1", false, "valid", true),
+        ("0.2.1", true, "invalid", false),
+        ("0.2.2", false, "invalid", false),
+        ("0.1.0", false, "current", false),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -45,12 +46,17 @@ async fn signed_download_rejects_tampering_and_version_replay_and_skips_current_
                     request.extend_from_slice(&chunk[..length]);
                     assert!(request.len() < 16384);
                 }
-                let (body, kind) = if request.starts_with(b"GET /manifest ") {
-                    (&manifest, "application/json")
-                } else {
-                    (&payload, "application/octet-stream")
-                };
-                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {kind}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
+                let (status, body, kind) =
+                    if fallback && request.starts_with(b"GET /updates/latest.json ") {
+                        ("404 Not Found", &[][..], "application/json")
+                    } else if request.starts_with(b"GET /manifest ")
+                        || request.starts_with(b"GET /updates/latest.json ")
+                    {
+                        ("200 OK", manifest.as_slice(), "application/json")
+                    } else {
+                        ("200 OK", payload.as_slice(), "application/octet-stream")
+                    };
+                stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: {kind}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
                 stream.write_all(body).await.unwrap();
             }
         });
@@ -66,7 +72,12 @@ async fn signed_download_rejects_tampering_and_version_replay_and_skips_current_
         // Local HTTP is confined to this mock runtime; production enforces HTTPS.
         let update = app
             .updater_builder()
-            .endpoints(vec![format!("http://{address}/manifest").parse().unwrap()])
+            .endpoints(vec![
+                format!("http://{address}/updates/latest.json")
+                    .parse()
+                    .unwrap(),
+                format!("http://{address}/manifest").parse().unwrap(),
+            ])
             .unwrap()
             .timeout(Duration::from_secs(3))
             .no_proxy()
