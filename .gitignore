@@ -5,11 +5,14 @@
 /node_modules/
 /dist/
 /latest.json
+/discord_To_VR-tauri.zip
 /.playwright-mcp/
 **/*.pdb
 
 # Compiled binaries
 *.exe
+*.exe.sig
+*.dll
 
 # Configuration containing sensitive keys & OAuth tokens
 config.json
