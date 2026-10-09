@@ -32,7 +32,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer-hooks
 
 [設定のサンプル](../config.example.json) は参照用です。GUI からの保存後は自動で接続を再開し、設定ファイルを直接編集した場合は再起動が必要です。画面だけを試すには `discord_To_VR.exe --ui-preview` を使います。プレビューはダミー情報で動き、Discord・XSOverlay への接続や設定の読み書きは行いません。
 
-ソース内の旧ネイティブ版では `cargo run -- --no-gui` / `--check-config` を維持しています。一般配布向けの画面は Tauri 版です。
+`src/` は通知転送・設定保存などの共通ライブラリ、`src-tauri/` はアプリの起動とデスクトップ機能、`frontend/` は画面です。旧ネイティブ GUI とその起動用プログラムは削除し、起動先を Tauri 版に統一しています。
 
 ## 配布者の初回設定
 

@@ -3,9 +3,8 @@ mod storage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // UI mode changes and OAuth refresh run on different threads. Keep every
@@ -216,14 +215,6 @@ fn valid_id(id: &str) -> bool {
         && id.parse::<u64>().is_ok()
 }
 
-pub fn safe_exit(code: i32) -> ! {
-    if io::stdin().is_terminal() {
-        println!("\nEnterキーを押すと終了します...");
-        let _ = io::stdin().read_line(&mut String::new());
-    }
-    process::exit(code);
-}
-
 pub fn get_config_path() -> PathBuf {
     if let Some(path) = CONFIG_PATH.get() {
         return path.clone();
@@ -283,28 +274,6 @@ pub fn load_from_path(path: &Path, protect: bool) -> io::Result<Config> {
         println!("🔐 認証情報を Windows ユーザーに紐づく暗号化形式で保存しました。");
     }
     Ok(config)
-}
-
-pub fn load_or_init() -> Config {
-    let path = get_config_path();
-    println!("📁 設定ファイル: {}", path.display());
-    if !path.exists() {
-        match crate::system::setup::run(&path) {
-            Ok(true) => {}
-            Ok(false) => process::exit(0),
-            Err(e) => {
-                crate::system::report_error(&format!("初回設定を完了できませんでした: {e}"));
-                safe_exit(1);
-            }
-        }
-    }
-    match load_from_path(&path, true) {
-        Ok(config) => config,
-        Err(e) => {
-            crate::system::report_error(&format!("設定を読み込めませんでした: {e}\n暗号化済みの設定は、保存した Windows ユーザーで開いてください。"));
-            safe_exit(1);
-        }
-    }
 }
 
 /// Setup reads existing values without migrating or overwriting the document.

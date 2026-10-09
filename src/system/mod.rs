@@ -1,22 +1,15 @@
 use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, INVALID_HANDLE_VALUE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{
-    AllocConsole, AttachConsole, GetStdHandle, SetConsoleCP, SetConsoleOutputCP,
-    ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+    AllocConsole, AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-
-const CP_UTF8: u32 = 65001;
 
 static CONSOLE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -39,52 +32,16 @@ pub fn report_error(message: &str) {
     {
         eprintln!("❌ {message}");
     } else {
+        let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "Discord → VR".encode_utf16().chain(Some(0)).collect();
         unsafe {
             MessageBoxW(
                 std::ptr::null_mut(),
-                desktop::wide(message).as_ptr(),
-                desktop::wide("Discord → VR").as_ptr(),
+                message.as_ptr(),
+                title.as_ptr(),
                 MB_OK | MB_ICONERROR,
             );
         }
-    }
-}
-
-pub struct InstanceGuard(HANDLE);
-impl Drop for InstanceGuard {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
-/// Windows' Local namespace keeps this guard within the current logon session.
-pub fn acquire_instance() -> io::Result<Option<InstanceGuard>> {
-    let name: Vec<u16> = "Local\\discord_To_VR.single-instance.v1"
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-    let error = unsafe { GetLastError() };
-    if handle.is_null() {
-        return Err(io::Error::from_raw_os_error(error as i32));
-    }
-    if error == ERROR_ALREADY_EXISTS {
-        unsafe {
-            CloseHandle(handle);
-        }
-        Ok(None)
-    } else {
-        Ok(Some(InstanceGuard(handle)))
-    }
-}
-
-/// コンソールの文字コードを UTF-8 に設定し、日本語の文字化けを防ぐ
-pub fn init_console_encoding() {
-    unsafe {
-        SetConsoleOutputCP(CP_UTF8);
-        SetConsoleCP(CP_UTF8);
     }
 }
 
@@ -94,46 +51,6 @@ pub fn init_display_scaling() {
             windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
-}
-
-pub fn print_privacy_mode(enabled: bool) {
-    println!(
-        "🔒 配信用モード: {}",
-        if enabled {
-            "ON（名前・本文・アイコンを非表示）"
-        } else {
-            "OFF（本文を表示）"
-        }
-    );
-}
-
-pub fn start_privacy_controls(privacy: Arc<AtomicBool>) {
-    if !io::stdin().is_terminal() {
-        return;
-    }
-    println!("💡 コンソールで p + Enter: 配信用モード切替 / Ctrl+C: 終了");
-    // A detached OS thread avoids blocking Tokio shutdown on a stdin read.
-    let _ = std::thread::spawn(move || {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match io::stdin().read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if line.trim().eq_ignore_ascii_case("p") {
-                        let enabled = !privacy.fetch_xor(true, Ordering::SeqCst);
-                        if let Err(e) = crate::config::save_privacy_at(
-                            &crate::config::get_config_path(),
-                            enabled,
-                        ) {
-                            eprintln!("⚠️ 表示モードを保存できませんでした: {e}");
-                        }
-                        print_privacy_mode(enabled);
-                    }
-                }
-            }
-        }
-    });
 }
 
 /// SteamVR や XSOverlay のプロセスが現在起動しているか確認する
@@ -215,6 +132,3 @@ pub async fn steamvr_monitor_loop(shutdown_tx: tokio::sync::mpsc::Sender<()>) {
         }
     }
 }
-mod desktop;
-pub mod setup;
-pub mod ui;

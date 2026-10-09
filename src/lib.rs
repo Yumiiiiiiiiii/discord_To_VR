@@ -1,4 +1,4 @@
-//! Notification, storage and Windows integration shared by the desktop clients.
+//! Notification, storage and Windows integration for the Tauri desktop app.
 pub mod config;
 pub mod diagnostics;
 pub mod discord;
