@@ -11,6 +11,9 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    concurrency:
+      group: discord-to-vr-${{ github.ref_type == 'tag' && 'stable-release' || github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -33,6 +36,12 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and !(Test-Path -LiteralPath "docs/release-notes/$($env:GITHUB_REF_NAME).md" -PathType Leaf)) {
             throw 'Write the changes since the previous release in docs/release-notes before publishing.'
           }
+      - name: Plan release assets and updater migration
+        id: distribution
+        if: github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/publish-update-feed.mjs --plan
       - uses: actions/cache@v4
         with:
           path: |
@@ -49,7 +58,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --test scripts/release-manifest.test.mjs
+          node --test scripts/release-manifest.test.mjs scripts/publish-update-feed.test.mjs
       - name: Build signed release
         if: github.ref_type == 'tag'
         env:
@@ -70,20 +79,11 @@ jobs:
           npm run desktop:build -- --ci --config $override -- --locked
       - name: Verify uninstall data cleanup
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-installer-hooks.ps1
-      - name: Package ZIP archive
-        shell: powershell
-        run: |
-          $files = @("target\tauri\release\discord_To_VR.exe", "README.md", "CHANGELOG.md", "config.example.json", "SECURITY.md", "IMPROVEMENTS.md", "LICENSE", "docs")
-          if (Test-Path -LiteralPath "target\tauri\release\WebView2Loader.dll") {
-            $files += "target\tauri\release\WebView2Loader.dll"
-          }
-          Compress-Archive -LiteralPath $files -DestinationPath discord_To_VR-tauri.zip -Force
       - name: Save build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: discord-to-vr-windows
           path: |
-            discord_To_VR-tauri.zip
             target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe
             target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe.sig
             latest.json
@@ -91,12 +91,13 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            discord_To_VR-tauri.zip
-            target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe
-            target/tauri/release/bundle/nsis/Discord to VR_${{ steps.release-version.outputs.version }}_x64-setup.exe.sig
-            latest.json
+          files: ${{ steps.distribution.outputs.release_files }}
           fail_on_unmatched_files: true
           body_path: docs/release-notes/${{ github.ref_name }}.md
           generate_release_notes: false
           make_latest: true
+      - name: Publish update feed outside release assets
+        if: github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/publish-update-feed.mjs --publish

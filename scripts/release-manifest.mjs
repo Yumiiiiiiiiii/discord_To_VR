@@ -3,6 +3,11 @@ import {resolve,join} from "node:path";
 import {fileURLToPath} from "node:url";
 
 export const repository="Yumiiiiiiiiii/discord_To_VR";
+export const feedBranch="updates";
+export const updaterEndpoints=[
+  `https://raw.githubusercontent.com/${repository}/${feedBranch}/latest.json`,
+  `https://github.com/${repository}/releases/latest/download/latest.json`,
+];
 export function validateVersion(config, cargo, pkg, tag) {
   const version=config.version;
   if(!/^\d+\.\d+\.\d+$/.test(version))throw new Error("Stable releases require a numeric major.minor.patch version.");
@@ -11,7 +16,7 @@ export function validateVersion(config, cargo, pkg, tag) {
   if(tag&&tag!==`v${version}`)throw new Error("The release tag must match the application version.");
   if(config.bundle.createUpdaterArtifacts!==true||!config.plugins.updater.requireSignedVersion)throw new Error("Signed, version-bound updater artifacts must be enabled.");
   const endpoints=config.plugins.updater.endpoints;
-  if(endpoints.length!==1||endpoints[0]!==`https://github.com/${repository}/releases/latest/download/latest.json`)throw new Error("Unexpected updater endpoint.");
+  if(!Array.isArray(endpoints)||endpoints.length!==updaterEndpoints.length||endpoints.some((endpoint,index)=>endpoint!==updaterEndpoints[index]))throw new Error("Unexpected updater endpoint.");
   return version;
 }
 export function manifest(version,tag,filename,signature,date=new Date()) {
